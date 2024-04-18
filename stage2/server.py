@@ -21,6 +21,7 @@ class TcpServer:
         self.sock = self.create_socket() 
         self.tcrp_parser = Tcrp_parser.Tcrp_parser(32)
         self.clients = {}
+        self.receive_parsed_packet_data = {}
         self.INIT_SERVER = 0
         self.RESPONSE_REQUEST = 1
         self.REQEST_CONPLETE = 2
@@ -33,25 +34,20 @@ class TcpServer:
             print('run')
             connection, self.client_address = self.sock.accept()
             try:
+                # receive
                 data = connection.recv(4096)
+                
+                # tcrp parse
                 self.tcrp_parser.parse_packet(data)
+                _, operation, state, _ = self.tcrp_parser.get_parse_header()
+                room_name, payload = self.tcrp_parser.get_parse_body()
+                self.set_received_packet_data(operation, state, room_name, payload)
+                print(self.receive_parsed_packet_data)
+                self.parsed_payload()
 
-                self.room_name, self.operation, self.state, self.payload_size = self.tcrp_parser.get_parse_header()
-                self.room_name, self.payload = self.tcrp_parser.get_parse_body()
-                print('receive: ')
-                print(self.room_name, self.operation, self.state, self.payload_size )
-                print(self.room_name, self.payload)
-
-
-                # test#
-                res = self.process_responce()
-                print(res)
-                tcrp = Tcrp.Tcrp(state= 1 , operation_payload=res)
-                message = tcrp.build_packet()
-                print('message: ')
-                print(message)
-
-                connection.sendall(message)
+                # create responce
+                complete_packet = self.process_responce(connection)
+                connection.sendall(complete_packet)
                 
 
             finally:
@@ -68,17 +64,28 @@ class TcpServer:
         return sock
 
 
-    def create_client(address, user_name, is_host, token=None):
-        client_info = ClientInfo.ClientInfo(address, user_name, token, is_host)
+    # non used
+    def create_client(self, address, user_name,  token, password, room_name=None):
+        if self.receive_parsed_packet_data["operation"] == 1:
+            client_info = ClientInfo.ClientInfo(address, user_name, token, is_host=True)
+            client_info.set_room_name(room_name)
+            client_info.set_password(password)
+        elif self.receive_parsed_packet_data["operation"] == 2:
+            client_info = ClientInfo.ClientInfo(address, user_name, token, is_host=False)
+
         return client_info
 
 
-    def create_chat_room(self):
-        if self.chat_room_exists():
-            token = self.generate_token()
-            client_info = self.create_client(self.client_address, self.room_name, True, token)
-            self.clients[token] = client_info
-            self.chat_rooms.create_room(self.room_name, client_info, token)
+    def create_chat_room(self, client_info):
+        chat_room_exists = self.chat_rooms.chat_room_exists(self.receive_parsed_packet_data['room_name'])
+
+        if not chat_room_exists:
+            self.chat_rooms.create_room(
+                client_info.get_room_name(), 
+                client_info, 
+                client_info.get_token(),
+                client_info.get_password()
+                )
             
 
 
@@ -87,18 +94,47 @@ class TcpServer:
         token = secrets.token_urlsafe(8)
         return token
 
-    def generate_responce_message_reqest(self,  boolean):
-        if boolean:
+    def generate_responce_message_request(self, chat_room_exists):
+        if not chat_room_exists:
             message = 'リクエストを受け付けました.....'
+            hash_payload = self.generate_responce_payload(message=message)
         else:
             message = 'リクエスト拒否しました....すでに同じ部屋は存在しています'
+            hash_payload = self.generate_responce_payload(message=message)
 
-        return message
+        return hash_payload
 
-    def generate_responce_join(self,  boolean):
-        responce_tcrp = Tcrp.Tcrp(operaion=2,state=2, room_name=self.room_name)
+    def generate_responce_join(self, chat_room_exists, password_exists, token=None):
+        print('----responce join-----')
+        print(chat_room_exists)
+        print(password_exists)
+        if chat_room_exists and password_exists:
+            message = 'トークンを発行しました'
+            hash_payload = self.generate_responce_payload(message, token)
+        else:
+            message = 'ルーム名又はパスワードが違います'
+            hash_payload = self.generate_responce_payload(message, token)
         
-        pass
+        return hash_payload 
+
+
+    def generate_responce_payload(self, message='', token=''):
+        hash_payload = {}
+        if message:
+            hash_payload['message'] = message
+
+        if token:
+            hash_payload['token'] = token
+
+        return hash_payload
+
+    def generate_responce(self, tcrp, state, hash_payload):
+        res_payload_json = self.encode_payload_json(hash_payload)
+        tcrp.set_state(state)
+        tcrp.set_payload(res_payload_json)
+        complete_packet = tcrp.build_packet() 
+
+        return complete_packet
 
     # assingn
     def assign_user_token(self):
@@ -108,33 +144,182 @@ class TcpServer:
         pass
 
 
+    # parser
+    def parsed_payload(self):
+        payload = self.receive_parsed_packet_data["payload"]
+        payload_json = json.loads(payload)
+        self.receive_parsed_packet_data["user_name"] = payload_json['user_name']
+        self.receive_parsed_packet_data["password"] = payload_json['password']
+
+
     # process
-    def process_responce(self):
-        chat_room_exitsts = self.chat_rooms.chat_room_exists(self.room_name)
+    def process_responce(self, connection):
+        print('-----check room_name-----')
+        print(self.receive_parsed_packet_data['room_name'])
         res_tcrp = Tcrp.Tcrp()
 
-        if self.operation == 2:
-            # join
-            pass
-        elif self.operation == 1:
-            # create_room
-            print('---process_responce-----')
-            message = self.generate_responce_message_reqest(chat_room_exitsts)
-            # json形式にする
-            payload_json = self.encode_responce_json(message) 
-            if not chat_room_exitsts:
-                pass
+        # operationCodeごとに分ける
+        if self.receive_parsed_packet_data['operation'] == 2:
+            print('-----process 2------')
+            chat_room_exists = self.chat_rooms.chat_room_exists(self.receive_parsed_packet_data['room_name'])
+            print('-----check is chat_room_name-----')
+            print(chat_room_exists)
+            """
+            ルームネームの確認
+            パスワードの確認
+                エラーであれば、エラーで返答「ルームネーム、パスワードいずれかが違います」
+            """
+            password_exists = self.chat_rooms.room_password_exists(
+                self.receive_parsed_packet_data['room_name'],
+                self.receive_parsed_packet_data['password'])
 
-            return payload_json 
+            hash_payload = self.generate_responce_join(chat_room_exists, password_exists)
+
+            if chat_room_exists and password_exists:
+                """
+                クライアントを作成
+                トークンを生成
+                clientsに追加
+                """
+                # create_client
+                token = self.generate_token()
+                client_info = ClientInfo.ClientInfo(
+                    self.client_address, 
+                    self.receive_parsed_packet_data['user_name'],
+                    token,
+                    is_host=False
+                )
+
+                self.clients[token] = client_info
+
+                """
+                ルームへの参加
+                """
+                # room join
+                self.chat_rooms.join_room(
+                    self.receive_parsed_packet_data['room_name'],
+                    client_info
+                )
+
+                """
+                レスポンスの作成
+                    トークンを返す
+                    payloadの作成
+                        jsonに変換
+                """
+                # payloadを生成
+                hash_payload = self.generate_responce_join(
+                    True,
+                    True,
+                    client_info.get_token()
+                )
+
+                # send
+                complete_packet = self.generate_responce(res_tcrp, self.REQEST_CONPLETE, hash_payload)
+                return complete_packet
+
+
+            else:
+                complete_packet = self.generate_responce(res_tcrp,  self.REQEST_CONPLETE, hash_payload)
+                return complete_packet
+
+
+
+
+        elif self.receive_parsed_packet_data['operation'] == 1:
+            print('-----process 1------')
+            """
+            ルームネームがかぶらないか確認
+            ルーム作成が可能であれば「リクエストを受け付けました」 
+            ルーム作成が不可能であれば「ルームを作成できません」 
+            いずれかを返答
+            """
+            chat_room_exists = self.chat_rooms.chat_room_exists(self.receive_parsed_packet_data['room_name'])
+            hash_payload = self.generate_responce_message_request(chat_room_exists)
+
+            # メッセージを送る
+            complete_packet = self.generate_responce(res_tcrp, self.RESPONSE_REQUEST, hash_payload)
+            connection.sendall(complete_packet)
+
+
+            """
+            クライアントを作成
+                クライアントを作成 
+                トークンを生成
+                clientsに追加
+            """
+            token = self.generate_token() 
+
+            client_info = ClientInfo.ClientInfo(
+                self.client_address, 
+                self.receive_parsed_packet_data["user_name"],
+                token, 
+                is_host=True
+            )
+            client_info.set_room_name(self.receive_parsed_packet_data['room_name'])
+            client_info.set_password(self.receive_parsed_packet_data['password'])
+
+            self.clients[token] = client_info
+
+
+            """
+            ルームを作成
+            """
+
+            # create_room
+            self.create_chat_room(client_info)
+            room = self.chat_rooms.get_room(client_info.get_room_name())
+
+
+            # 確認用
+            print('----room----')
+            print(room)
+
+
+            """
+            レスポンスを作成
+                payloadの作成
+                    jsonに変換
+                tcrpに変換
+            """
+            # payloadを生成
+            hash_payload = self.generate_responce_join(
+                True,
+                True,
+                client_info.get_token()
+                )
+
+            # send
+            complete_packet = self.generate_responce(res_tcrp, self.REQEST_CONPLETE, hash_payload)
+            return complete_packet
+
+
+
+
+    # set
+    def set_received_packet_data(self, operation=0, state=0, room_name='', payload=''):
+        room_name = self.decode_receive_packet(room_name)
+        payload = self.decode_receive_packet(payload)
+        self.receive_parsed_packet_data = {
+           "operation": operation,
+           "state": state,
+           "room_name": room_name,
+            "payload": payload
+        }
+
+    def set_client_info(self):
+        pass
 
     # encode
-    def encode_responce_json(self, message):
-        payload = {
-            'message': message
-        }
-        payload_json = json.dumps(payload)
+    def encode_payload_json(self, hash_payload):
+        payload_json = json.dumps(hash_payload)
 
         return payload_json
+
+    # decode
+    def decode_receive_packet(self, target):
+        target_decode = target.decode('utf-8')
+        return target_decode
 
 
 
@@ -189,7 +374,7 @@ class UdpServer:
         self.timeout = timeout
 
     
-    #def  process_recived_message(data):
+    #def  process_received_message(data):
         
     def get_username(self, data):
         name_byte_length = int.from_bytes(data[:1], 'big')

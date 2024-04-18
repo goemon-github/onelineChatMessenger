@@ -37,7 +37,7 @@ class Client:
 
 
         message = self.recive_tcp_packet()
-        print(message)
+        print('----------受信しました----------')
 
         self.tcp_sock.close()
         print('----------tcp server close----------')
@@ -152,8 +152,8 @@ class Client:
     def create_tcrp_packet(self):
         # input
 
-        username = self.input_username()
-        self.client_info.set_username(username)
+        get_user_name = self.input_username()
+        self.client_info.set_user_name(get_user_name)
 
         room_name = self.input_chatroom_name()
         self.client_info.set_room_name(room_name)
@@ -168,7 +168,7 @@ class Client:
         # create tcrp packet
         tcrp = Tcrp.Tcrp()
         self.set_tcrp_header(tcrp, self.client_info.get_room_name(), operation_code, state=0)
-        tcrp.set_operation_payload(payload_json)
+        tcrp.set_payload(payload_json)
 
         tcrp_message = tcrp.build_packet()        
 
@@ -177,13 +177,14 @@ class Client:
     # encode
     def encode_payload_to_json(self):
         payload = {
-            'user_name': self.client_info.get_username(),
+            'user_name': self.client_info.get_user_name(),
             'password' : self.client_info.get_password()
         }
 
         payload_json = json.dumps(payload)
 
         return payload_json
+
 
     # get
     def get_username(self, data):
@@ -201,11 +202,14 @@ class Client:
 
     def get_token_from_payload(self, payload):
             payload = payload.decode('utf-8')
-            self.client_info.set_token( json.loads(payload)['token'])
+            parse_json_payload = json.loads(payload)
+            print(parse_json_payload)
+            self.client_info.set_token(parse_json_payload['token'])
 
     def get_message_from_payload(self, payload):
             payload = payload.decode('utf-8')
             res_message = json.loads(payload)['message']
+            return res_message
 
 
     # set
@@ -227,7 +231,7 @@ class Client:
 
     def recive_tcp_packet(self):
         tcrp_parser = Tcrp_parser.Tcrp_parser(32)
-        self.tcp_sock.settimeout(3.0)
+        self.tcp_sock.settimeout(5.0)
         while True: 
             try:
                 responce = self.tcp_sock.recv(4096)
@@ -237,11 +241,13 @@ class Client:
                 if state == 2:
                     self.get_token_from_payload(payload)
                     break
+
                 elif state == 1:
                     res_message = self.get_message_from_payload(payload)
                     print('---responce message-----')
                     print(res_message)
                     return res_message
+
             except self.tcp_sock.timeout:
                 print('recv: time out')
                 break
