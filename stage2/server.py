@@ -1,8 +1,9 @@
 import socket
 import time
 import json
-import hashlib
+import threading
 import secrets
+import struct
 import tcrp as Tcrp
 import tcrp_parser as Tcrp_parser
 import clientInfo as ClientInfo
@@ -13,14 +14,14 @@ import chat_rooms as Chat_rooms
 
 
 
-class TcpServer:
-    def __init__(self, chat_rooms, host='0.0.0.0', port=9002):
+class Tcp_server:
+    def __init__(self, chat_rooms, clients, host='0.0.0.0', port=9002):
         self.chat_rooms = chat_rooms
         self.host = host
         self.port = port 
         self.sock = self.create_socket() 
         self.tcrp_parser = Tcrp_parser.Tcrp_parser(32)
-        self.clients = {}
+        self.clients =  clients
         self.receive_parsed_packet_data = {}
         self.INIT_SERVER = 0
         self.RESPONSE_REQUEST = 1
@@ -31,7 +32,6 @@ class TcpServer:
     # run
     def run(self):
         while True:
-            print('run')
             connection, self.client_address = self.sock.accept()
             try:
                 # receive
@@ -62,19 +62,6 @@ class TcpServer:
         sock.listen(1)
         print('tcp Listen.................')
         return sock
-
-
-    # non used
-    def create_client(self, address, user_name,  token, password, room_name=None):
-        if self.receive_parsed_packet_data["operation"] == 1:
-            client_info = ClientInfo.ClientInfo(address, user_name, token, is_host=True)
-            client_info.set_room_name(room_name)
-            client_info.set_password(password)
-        elif self.receive_parsed_packet_data["operation"] == 2:
-            client_info = ClientInfo.ClientInfo(address, user_name, token, is_host=False)
-
-        return client_info
-
 
     def create_chat_room(self, client_info):
         chat_room_exists = self.chat_rooms.chat_room_exists(self.receive_parsed_packet_data['room_name'])
@@ -109,7 +96,7 @@ class TcpServer:
         print(chat_room_exists)
         print(password_exists)
         if chat_room_exists and password_exists:
-            message = 'トークンを発行しました'
+            message = 'ルームに参加しました トークンを発行します'
             hash_payload = self.generate_responce_payload(message, token)
         else:
             message = 'ルーム名又はパスワードが違います'
@@ -149,6 +136,7 @@ class TcpServer:
         payload = self.receive_parsed_packet_data["payload"]
         payload_json = json.loads(payload)
         self.receive_parsed_packet_data["user_name"] = payload_json['user_name']
+        self.receive_parsed_packet_data["udp_address"] =tuple(payload_json['udp_address'])
         self.receive_parsed_packet_data["password"] = payload_json['password']
 
 
@@ -183,10 +171,13 @@ class TcpServer:
                 """
                 # create_client
                 token = self.generate_token()
+                print(token)
                 client_info = ClientInfo.ClientInfo(
                     self.client_address, 
+                    self.receive_parsed_packet_data['udp_address'],
                     self.receive_parsed_packet_data['user_name'],
-                    token,
+                    self.receive_parsed_packet_data['room_name'],
+                    token= token,
                     is_host=False
                 )
 
@@ -249,14 +240,18 @@ class TcpServer:
                 clientsに追加
             """
             token = self.generate_token() 
+            print('---token---')
+            print(token)
 
             client_info = ClientInfo.ClientInfo(
                 self.client_address, 
+                self.receive_parsed_packet_data['udp_address'],
                 self.receive_parsed_packet_data["user_name"],
-                token, 
+                self.receive_parsed_packet_data['room_name'],
+                token=token, 
                 is_host=True
             )
-            client_info.set_room_name(self.receive_parsed_packet_data['room_name'])
+
             client_info.set_password(self.receive_parsed_packet_data['password'])
 
             self.clients[token] = client_info
@@ -291,6 +286,7 @@ class TcpServer:
 
             # send
             complete_packet = self.generate_responce(res_tcrp, self.REQEST_CONPLETE, hash_payload)
+
             return complete_packet
 
 
@@ -325,56 +321,74 @@ class TcpServer:
 
 
 
-class UdpServer:
-    def __init__(self, chat_rooms, host='0.0.0.0', port=9001, timeout=30) :
+class Udp_server:
+    def __init__(self, chat_rooms, clients, host='0.0.0.0', port=9001, timeout=18000):
         self.chat_rooms = chat_rooms
         self.host = host  
         self.port = port
         self.sock = self.create_socket()
         self.timeout = timeout
-        self.clients = {}
+        self.clients = clients 
 
     def create_socket(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.bind((self.host, self.port))
-        print('Listen.............')
+        print('UDP Listen.............')
 
         return sock
 
     def run(self):
+
         while True:
+            print('-----udp run----')
             data, address = self.sock.recvfrom(4096)
+            user_name, name_byte_length = self.get_username(data)
 
-            username, name_byte_length = self.get_username(data)
+            self.update_client_activity(user_name, address)
+            message = self.get_udp_message(data, name_byte_length)
 
-            self.update_client_activity(username, address)
-            message = self.get_message(data, name_byte_length)
-
-            print('username: {}, message: {}'.format(username.encode(), message))
+            print('username: {}, message: {}'.format(user_name, message))
 
             if data:
-                # 現在時刻を取得 
+                    # 現在時刻を取得 
                 current_time = time.time()
+                print('---check udp  data -----')
+                payload = self.udp_parser(data)
+                payload_json = json.loads(payload)
+                room_name = payload_json['room_name']
+                token = payload_json['token']
+                message = payload_json['message']
+                print('room_name: {}, token: {}, message: {}'
+                    .format(payload_json['room_name'], payload_json['token'], payload_json['message']))
 
-                print('data: {}, address: {}'.format( data.decode(), address))
-                inactive_clients = [username for username, info in self.clients.items() if current_time - info.last_activity_time > self.timeout]
-                self.delete_inactive_client(inactive_clients)
+                current_client = self.clients[token]
 
-                for client_username, client_info in self.clients.items():
-                    if client_username != username and current_time - client_info.last_activity_time < self.timeout:
+                room = self.chat_rooms.get_room(current_client.get_room_name())
 
-                        full_message = self.create_full_message(username, message) 
+                inactive_cliets = [client_info 
+                                  for client_info in room['users']
+                                  if current_time - client_info.get_last_activity_time() > self.timeout
+                                ]
+                
+                self.delete_inactive_client(room['room_name'], inactive_cliets)
 
-                        self.sock.sendto(full_message, client_info.address)
-                        print('relay {}'.format(client_info.address))
+                active_clients = self.chat_rooms.get_users_from_room(room['room_name'])
+                for active_client in active_clients:
+                    if current_client.get_token() != active_client.get_token() and current_time - active_client.get_last_activity_time() < self.timeout:
 
+                        full_message = self.create_full_message( message) 
+                        print('----------udp send---------')
+                        print(full_message)
+                        self.sock.sendto(full_message, active_client.get_udp_address())
+                        print('user: {} relay {}'.format(active_client.get_user_name(), active_client.get_udp_address()))
+                
 
 
     def update_timeout(self, timeout):
         self.timeout = timeout
 
     
-    #def  process_received_message(data):
+    # get
         
     def get_username(self, data):
         name_byte_length = int.from_bytes(data[:1], 'big')
@@ -382,50 +396,57 @@ class UdpServer:
 
         return username, name_byte_length
 
-    def get_message(self, data, name_byte_length):
+    def get_udp_message(self, data, name_byte_length):
         message = data[1+name_byte_length:].decode('utf-8')
         return message 
 
+    def get_room_participants(self, room):
+        return room['particpants']
 
+    # update
     def update_client_activity(self, username, address):
         if username in self.clients:
             self.clients[username].last_activity_time = time.time()
         else:
             self.clients[username] = ClientInfo.ClientInfo(address)
 
-    def delete_inactive_client(self, inactive_clients):
-        for inactive_client in inactive_clients:
-            del self.clients[inactive_client]
-            print('delete {}'.format(inactive_client))
+    def delete_inactive_client(self, room_name, inactive_clients):
+        for client in inactive_clients:
+            self.chat_rooms.remove_users_from_room(room_name, client)
 
 
-    def create_full_message(self, username, message):
-        header = len(username).to_bytes(1, byteorder='big')
-        username = username.encode()
-        message = message.encode()
-        full_message = header + username + message
-        print('header: {}, username: {}, message: {}'.format(header, username, message))
-        return full_message
+    def create_full_message(self, message):
+        full_message = {"message": message}
+        full_message_json = json.dumps(full_message)
+        encode_full_message = full_message_json.encode('utf-8')
+        print(' message: {}'.format(message))
+        return encode_full_message
 
 
-    def create_chatromm(self):
-        pass
 
-    def connection_chatroom(self):
-        pass
+    def udp_parser(self, data):
+        header_size = 2
+        print(data.decode('utf-8'))
+        body = data[header_size:]
+        body = body.decode('utf-8')
+        return body
 
-    def create_client_token(self):
-        pass
+
 
         
 
 
 if __name__ == '__main__':
     chat_rooms = Chat_rooms.Chatrooms()
+    clients = {}
 
-    tcpServer = TcpServer(chat_rooms)
-    tcpServer.run()
+    tcp_server = Tcp_server(chat_rooms, clients)
 
+    udp_server = Udp_server(chat_rooms, clients)
 
-    #udpServer = UdpServer()
-    #udpServer.run()
+    thread_tcp_server = threading.Thread(target=tcp_server.run)
+    thread_udp_server = threading.Thread(target=udp_server.run)
+
+    thread_tcp_server.start()
+    thread_udp_server.start()
+

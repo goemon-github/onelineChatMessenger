@@ -31,7 +31,7 @@ class Tcrp:
     def create_header(self, room_name, operation, state, payload):
         room_name_encoded = room_name.encode('utf-8')
         operation_size = len(payload).to_bytes(29, byteorder='big')
-        print('------------check header-----------')
+        print('------------tcrp check header-----------')
         print('len: {}, op: {}, state: {}'.format(type(room_name_encoded), type(operation), type(state)))
         header = bytearray([len(room_name_encoded), operation, state, ]) + operation_size
 
