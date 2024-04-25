@@ -33,7 +33,6 @@ class Client:
         self.tcp_server = self.input_server(self.client_info.get_tcp_address(), 9002)
         self.tcp_sock.connect((self.tcp_server))
         print('----------接続しました----------')
-        print(self.udp_sock.getsockname())        
         tcrp_packet = self.create_tcrp_packet()
         self.tcp_sock.sendall(tcrp_packet)
         print('----------送信しました----------')
@@ -101,13 +100,17 @@ class Client:
     def input_chatroom_name(self):
         MAX_SIZE = 256
         while True:
-            chatroom_name = input('chatRoom name: ')
-            byte_chatroom_name = chatroom_name.encode('utf-8')
-            if len(byte_chatroom_name) > MAX_SIZE:
-                print('error over size')
-            else:
-                break
-
+            try:
+                chatroom_name = input('chatRoom name: ')
+                if not isinstance(chatroom_name, str):
+                    raise ValueError('chatroom name must string')
+                byte_chatroom_name = chatroom_name.encode('utf-8')
+                if len(byte_chatroom_name) > MAX_SIZE:
+                    print('error over size')
+                else:
+                    break
+            except ValueError as e:
+                print(e)
         return chatroom_name
 
     def input_message(self):
@@ -141,10 +144,11 @@ class Client:
         get_user_name = self.input_username()
         self.client_info.set_user_name(get_user_name)
 
+        operation_code = self.input_operation_code()
+
         room_name = self.input_chatroom_name()
         self.client_info.set_room_name(room_name)
 
-        operation_code = self.input_operation_code()
         password = self.input_password()
         self.client_info.set_password(password)
         self.client_info.set_udp_address(self.udp_sock.getsockname())
@@ -228,7 +232,6 @@ class Client:
 
     # receive
     def receive_udp_packet(self):
-        print('----receive_udp_packet')
         while True:
                 data, _ = self.udp_sock.recvfrom(4096)
                 if data:
@@ -246,13 +249,12 @@ class Client:
                 if state == 2:
                     self.get_token_from_payload(payload)
                     res_message = self.get_udp_message_from_payload(payload)
-                    print('message: {}'.format(res_message))
+                    print('responce_message: {}'.format(res_message))
                     print('token: {}'.format(self.client_info.get_token()))
                     break
 
                 elif state == 1:
                     res_message = self.get_udp_message_from_payload(payload)
-                    print('---responce message-----')
                     print(res_message)
 
             except self.tcp_sock.timeout:
@@ -272,12 +274,6 @@ class Client:
 
     # Udp_Chat_start
     def start_chat(self):
-        # port　ramdom
-        '''
-        port = int(random.uniform(9003, 9100))
-        print('----port---')
-        print(port)
-        '''
 
         thread_send = threading.Thread(target=self.send_udp_packet)
         thread_receive = threading.Thread(target=self.receive_udp_packet)

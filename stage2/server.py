@@ -340,7 +340,6 @@ class Udp_server:
     def run(self):
 
         while True:
-            print('-----udp run----')
             data, address = self.sock.recvfrom(4096)
             user_name, name_byte_length = self.get_username(data)
 
